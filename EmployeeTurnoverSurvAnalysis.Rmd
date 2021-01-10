@@ -1,0 +1,451 @@
+---
+title: "Employee Turnover Rates"
+author: "Jacob Miller, Sarah Tappin, Jacqueline Zhang"
+date: "11/30/2020"
+output:
+  html_document: default
+  pdf_document: default
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
+```
+
+```{r libraries, message = FALSE, warning = FALSE}
+library(readr)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(mclust)
+library(factoextra)
+library(gridExtra)
+library(purrr)
+library(cluster)
+library(GGally)
+library(plotly)
+library(ggbiplot)
+```
+
+```{r data, echo = FALSE, message=FALSE, warning = FALSE}
+turnover <- read_csv("~/Downloads/turnover.csv")
+```
+
+# Overview
+
+#### Data Description
+We sourced our Employee Turnover data set from Kaggle. It was provided by Edward Babushkin, a Russian blogger.
+
+The Employee Turnover data set, aims to predict an employee’s risk of quitting. Some of the attributes included are stag (experience time in months), event (employee turnover), gender, age, industry, profession, traffic (how the employee came to the company), coach (whether or not there’s a supervisor/mentor), head gender (gender of manager/supervisor), greywage (a mix of taxed and untaxed wages). The final attributes are personality based, including scores on extraversion, independence, self control, anxiety, and novator. 
+
+#### Variables:
+* stag - work experience (in months)
+* event - staying or quitting
+* gender - female (f), male (m)
+* age - the employee's age in years
+* industry - the employee's industry
+* profession - the employee's profession 
+* traffic - From what pipeline candidate came to the company
+* coach - presence of a mentor during the probation period
+* head_gender - interpreted to mean the gender of the supervisor
+* greywage -  Portion of the salary that is paid in cash
+* way -   how an employee gets to work (by foot, by bus, etc.)
+* Personality Traits (on a scale from 0 to 10, 10 being the highest observation amount):
+  + extraversion 
+  + independ 
+  + selfcontrol 
+  + anxiety 
+  + novator - a measure of how innovative the employee is
+
+#### Objective
+
+We are interested in determining which attributes strongly influence employee turnover. In order to do this we are utilizing survival analysis modeling and BIC as a criterion for model selection. In order to further explore the personlaity attributes which are unique to this data set, we used machine learning techniques such as Principal Componenet Analysis (PCA) and Clustering to determine if certain personality traits had an effect on the individual choosing to quit their job.
+
+# Survival Analysis Model
+```{r survival data}
+turn.surv<-Surv(turnover$stag,turnover$event)
+turn.fit<-surv_fit(turn.surv~1, data = turnover)
+ggsurvplot(turn.fit, legend = 'none') + 
+  ggtitle("KM Estimates for Employee Turnover") + xlab('Time (months)') 
+```
+
+This Kaplan-Meier Estimate of the survival curve for employees staying at their job gives us a brief insight into data. For example, it tells us that, with a 95% confidence level, the median time for someone to stay at their job is between 45.5688 and 54.0452 months. It also tells us that the probability of staying at the same job for longer than 166 months is less than 0.03.  
+
+Here we will start forward selection to find a model  
+
+```{r}
+full.model<-coxph(turn.surv~gender + age + industry + profession + traffic + coach +
+                    head_gender + greywage + way + extraversion + independ + 
+                    selfcontrol + anxiety + novator, data = turnover)
+red.model<-coxph(turn.surv~1, data = turnover)
+n<-length(turn.surv)
+(best_model<- step(red.model, scope = list(lower = red.model, upper = full.model), 
+                  direction = 'forward', trace = 0, k =log(n)))
+```
+
+This gives us a good look at what our model using BIC will look like, but in order to take a closer look at why it chose those covariates, we will go through the process step by step. For the sake of not having compious amounts of code, we only included the code for the last step in the selection processs. 
+
+```{r}
+step_4_basis<-BIC(
+model8.2.10.1<-coxph(turn.surv~greywage + age + extraversion + gender, data = turnover),
+model8.2.10.3<-coxph(turn.surv~greywage + age + extraversion + industry, data = turnover),
+model8.2.10.4<-coxph(turn.surv~greywage + age + extraversion + profession, data = turnover),
+model8.2.10.5<-coxph(turn.surv~greywage + age + extraversion + traffic, data = turnover),
+model8.2.10.6<-coxph(turn.surv~greywage + age + extraversion + coach, data = turnover),
+model8.2.10.7<-coxph(turn.surv~greywage + age + extraversion + head_gender,
+                     data = turnover),
+model8.2.10.9<-coxph(turn.surv~greywage + age + extraversion + way, data = turnover),
+model8.2.10.11<-coxph(turn.surv~greywage + age + extraversion + independ, data = turnover),
+model8.2.10.12<-coxph(turn.surv~greywage + age + extraversion + selfcontrol,
+                      data = turnover),
+model8.2.10.13<-coxph(turn.surv~greywage + age + extraversion + anxiety, data = turnover),
+model8.2.10.14<-coxph(turn.surv~greywage + age + extraversion + novator, data = turnover)
+)
+step_4_basis$BIC
+which(step_4_basis$BIC==min(step_4_basis$BIC)) 
+#model8.2.10.9 with greywage + age + extraversion + way has lowest BIC of these
+```
+
+If we continued the step process after our 3 covariate model given by the step function, model8.2.10.9 with the covariates greywage, age, extraversion, and way was the next step using BIC so we want to take a closer look at this model.
+
+```{r}
+test_model<-model8.2.10.9
+AIC(best_model,test_model)
+anova(best_model, test_model) #test suggests we utilize the more complex model
+```
+
+model8.2.10.9 actually has a lower AIC score, so it is reasonable to compare the two models using a Likelihood Ratio Test to determine the best model. The result of the LRT tells us that the better model is in fact the one that includes the covariate 'way', so we will continue forward with our analysis using this larger model.Before this, however, we beg the question, if we utilized AIC instead of BIC, would our model be different? Let's find out.
+
+```{r}
+step(red.model, scope = list(lower = red.model, upper = full.model), direction = 'forward', trace = 0)
+```
+
+Safe to say that if we utilized AIC, we would end up with a very different model. This larger model has a much higher likelihood, but it has significantly more covariates than our other two models. This would make interpretation and utilization of the model very difficult and confusing, so we will stick to utilizing our test_model from above. To start,we will observe the KM estimates when we condition on each covariate to see if they do, in fact, appear to have an effect on employee turnover. After which, we will check to see if cox proportional hazards is a reasonable assumption for the model. In order to get comprehensible plots of our extraversion and age covariates, we need to  first group the data. 
+
+```{r}
+turnover$extra.cat<-factor(ceiling((turnover$extraversion)/5))
+levels(turnover$extra.cat) <- c('1-5', '5+')
+table(turnover$extra.cat)
+turnover$age.cat<-factor(ceiling((turnover$age)/30))
+levels(turnover$age.cat)<-c('18-30','30-58')
+table(turnover$age.cat)
+```
+
+With our covariates adjusted into reasonable groups we can more clearly see the KM curves and log-log plots.
+
+```{r}
+test_fit1<-surv_fit(turn.surv~ greywage, data = turnover)
+test_fit2<-surv_fit(turn.surv~ age.cat, data = turnover)
+test_fit3<-surv_fit(turn.surv~ extra.cat, data = turnover)
+test_fit4<-surv_fit(turn.surv~ way, data = turnover)
+
+ggsurvplot(test_fit1) + ggtitle('KM Estimate of Greywage Covariate') + 
+  xlab('Time (months)')
+ggsurvplot(test_fit2) + ggtitle('KM Estimate of Age Covariate') + 
+  xlab('Time (months)')
+ggsurvplot(test_fit3) + ggtitle('KM Estimate of Extraversion Covariate') +
+  xlab('Time (months)')
+ggsurvplot(test_fit4) + ggtitle('KM Estimate of Way Covariate') + 
+  xlab('Time (months)')
+```
+
+As we look at these plots we notice a few interesting details. The first is that when looking at the Greywage covariate, we notice that there appears to be a much smaller number of employees receiving a greywage compared to ones receiving a white wage. This may play a big role as to why the curves are so different, but the curves are so different that it is hard to tell. Overall it appears that the type of wage does look to have a significant effect and that jobs with a greywage have higher turnover. Then looking at the age covariate, we notice that older employees, aged 30-58 have a lover survival curve compared to that of the employees aged between 18 and 30. Although the curves appear to be very similar for the first 30 months or so, we see a much more obvious disparity after 50 months which indicates that, overall, age appears to have an effect on employee turnover and that younger employees tend to stay longer. When looking at the Extraversion covariate, we notice a similar pattern as age where the two categories are similar early on, but after some time there becomes a distinct difference. In particular, we can see that employees with an extraversion score greater than 5, meaning they are more extroverted, have a lower survival rate than those with an extraversion score  of less than 5. This indicates that how long an employee stays at a company is inversely related to how extroverted that person is. Finally when we observe the KM estimates for the way covariate we see disparities among the possible methods of transportation. Firstly, it appears that far fewer people walked to work compared to either driving or taking a bus. Despite this we can see that the survival curve for each method of transportation appears to be significantly different from each other with employees that walked to work having the highest overall survival curve, then those who drove a car, and those who took the bus having the lowest survival curve.In order to get more specific interpretations we will want to use these covariates in a cox proportional hazards model, so we need to check our PH assumptions. We will start by analyzing the complementary log-log plots of the covariates.
+
+```{r}
+ggsurvplot(test_fit1, fun = 'cloglog') + ggtitle('Log-Log plot of Greywage Covariate') + 
+  xlab('Time (months)')
+ggsurvplot(test_fit2, fun = 'cloglog') + ggtitle('Log-Log plot of Age Covariate') + 
+  xlab('Time (months)')
+ggsurvplot(test_fit3, fun = 'cloglog') + ggtitle('Log-Log plot of Extraversion Covariate') +
+  xlab('Time (months)')
+ggsurvplot(test_fit4, fun = 'cloglog') + ggtitle('Log-Log plot of Way Covariate') + 
+  xlab('Time (months)')
+```
+
+When looking at these log-log plots, there is a bit of concern in every plot from $t=0$ to $t=10$ and after $t=100$ but between 10 months and 100 months, our plots, for the most part, look very good for our cox proportional hazards assumptions. That does not mean that there are not concerns in each plot, however. Our biggest concern with the greywage covariate plot is that it appears 'grey' has a curve that would eventually cross 'white' if the data continued in its trajectory. For the age covariate, there are no real concerns that stand out besides how close the two lines appear to be to each other, but this is not indicative of proportional hazards being violated since the two curves appear to be mostly parallel throughout. extraversion has a similar concern to age with the curves being very close to each other, but more importantly, the curves appear to cross at $t=1$, after $t=10$, and again at the end of the data a little after $t=100$. The way covariate does not appear to have an issue of intersecting curves, at least  not after $t=10$, so the only real concern would be if all the curves are truly parallel as the distance between the curves appears to be inconsistent through time. Overall, the concerns we have with the log-log plots appear mostly at the very beginning or the end of our data where there are less data points meaning that it is possible that these violations are simply due to chance. To double check our assumptions we will utilize cox.zph to determine if we should be worried about these violations.
+
+```{r, warning=FALSE, message = FALSE, fig.width=10, fig.height =10}
+(cox_test<-cox.zph(test_model))
+ggcoxzph(cox_test)
+```
+
+As we can see from the cox.zph results, none of our concerns were statistically significant. We can also note that the two covariates that we had the largest concerns for were the most significant in the cox.zph test which indicates we had a good interpretation of our plots. Since we now know that our model meets cox proportional hazards assumptions, we do not need to look at possible stratified or time varying models. Instead, we feel that it may be a good idea to take a look at possible interaction terms that may be useful to our model.
+
+```{r}
+interaction.1.model<-coxph(turn.surv~ age + extraversion + way*greywage, data = turnover)
+interaction.2.model<-coxph(turn.surv~ extraversion + way + age*greywage, data = turnover)
+interaction.3.model<-coxph(turn.surv~ age + way + extraversion*greywage, data = turnover)
+interaction.4.model<-coxph(turn.surv~ greywage + extraversion + way*age, data = turnover)
+interaction.5.model<-coxph(turn.surv~ greywage + way + extraversion*age, data = turnover)
+interaction.6.model<-coxph(turn.surv~ age + greywage + way*extraversion, data = turnover)
+
+anova(interaction.1.model) #definitely don't need interaction
+anova(interaction.2.model)
+anova(interaction.3.model)
+anova(interaction.4.model)
+anova(interaction.5.model)
+anova(interaction.6.model)
+```
+
+Looking at the analysis of deviance table of all the possible interaction models, we can see that none of the interaction terms are significant at a $\alpha=0.05$ significance level. The only interaction that possibly seems viable is the interaction between way and age, but it also appears to decrease our log likelihood, so we will leave it out of our model.With our definite final model set, we will look at how each covariate affects the hazard rate of employment.
+
+```{r}
+test_model
+AIC(test_model) #Use AIC and BIC to compare this model with models using PC and Clusters
+BIC(test_model)
+model.summary<-summary(test_model)
+intervals<-model.summary$conf.int
+intervals[,c(1,3,4)]
+```
+
+The first thing that stands out about these intervals of the hazard ratios is that none of them contain 1. This means that all of our covariates have significant hazard ratios compared to the baseline hazard rate. Specifically, when looking at greywage, employees with white wage, meaning a 100% legal wage, had a hazard rate between 45.2% and 74.4% of the hazard rate for employees with a grey wage, meaning they had a mix of legal and illegal wage.This indicates that employees were much more likely to stay at the job if their wage was 100% legal. This could be for a variety of reasons ranging from employees not being comfortable with receiving illegal compensation for work, to the idea that companies intend for grey wage jobs to be more temporary. For age we see that the interval for the hazard ration is strictly greater than 1 which indicates that as age increases, the hazard rate for the employee also increases meaning they are more likely to leave their job as they get older. The same type of interpretation can be given for extraversion where the more extroverted an employee is, the more likely they are to leave their job. When looking at the way covariate, we need to interpret the intervals for 'car' and 'foot' compared to employees who took the bus.First, when looking at 'car' we notice that the hazard rate for employees that drove a car to work was between 65.8% and 95% of the hazard rate for employees that took the bus. Second, employees that walked to work have a hazard rate that is between 48.7% and 92.2% of the hazard rate for employees that took the bus.From both these intervals we can interpret that employees that take the bus to work are more likely to leave their job 
+
+# Personality Analysis
+
+With the personality score data in our dataset, we were interested to see if and how people's personalities affected their decision of quitting. 
+
+Focusing on the personality columns (i.e. extraversion, independence, selfcontrol, anxiety, novator), these variables were scored on a scale of 1 to 10 (i.e. 10 in extraversion means a very extroverted person, 1 means an introverted person). 
+
+## Assumptions were made about what personality attributes contribute more to someone quitting or staying at a job:   
+
+- Highly independent people tend to quit more, since they are less likely to rely on things like jobs or conform to company rules or hierarchy. Because independent people are assumed to be more confident, they are more likely to feel brave enough to quit. 
+
+- Looking at extraversion, we believed an extroverted person would be more likely to quit. Extroverted people are typically more comfortable voicing their opinions and tend to show more of their emotions.
+
+- Looking at self control, people with a low rating are more likely to quit, since they are prone to making rash decisions.
+
+- A person with high anxiety would be more prone to staying at a job, instead of quitting. Someone with high anxiety is assumed to be more scared to quit a job, possibility due to a lack of steady income, inability to pay bills, and other stresses caused by unemployment.
+
+- Looking at novator, someone who is more innovative is more likely to quit their job because they crave new and exciting things. Their old job may become repetitive and tedious or they do not see potential for growth in their current company.
+
+## Principal Components Analysis on Personality Ratings
+
+```{r PCA data}
+# Personality columns
+personality <- turnover[12:16]
+```
+
+#### Running PCA, we obtained 5 principal components, PC1-PC5. 
+```{r}
+pr.out = prcomp(personality, scale=TRUE)
+summary(pr.out)
+```
+
+Each explain a percentage of the total variation in the dataset. PC1 explains about 39% of the total variance, PC2 explains about 29% of the total variance, and so forth. The values in the plots correspond with the values seen above from *prcomp*. 
+
+```{r}
+pr.var=pr.out$sdev^2
+pve=pr.var/sum(pr.var)
+plot(pve, main="PVE explained by each component", xlab="Principal Component", 
+     ylab="Proportion of Variance Explained", ylim=c(0,1), type="b")
+```
+
+Since PC1 and PC2 had the highest proportion of variance explained, we focused on these two principal components. 
+
+##### The center and scale components of our PCA object correspond to the means and standard deviations of the variables that were used prior to using PCA. It appeared that all of the personality ratings had similar means.
+```{r}
+pr.out$center
+```
+
+Ultimately, *novator* had the highest mean, so we saw that people only have a slightly higher rating for *novator* versus the other attributes. 
+
+##### We saw that all the variables have similar standard deviations as well.
+```{r}
+pr.out$scale
+```
+
+Ultimately, *selfcontrol* had the highest standard deviation, so there is more variation between ratings when it comes to self control.
+
+##### The rotation matrix gives the principal component loadings, with each column containing the corresponding principal component loading vector. This shows the relationship between the initial variables and the principal components.
+```{r}
+pr.out$rotation
+```
+
+Looking at PC1 loadings, we saw that extroversion, self control, and novator had the heaviest weights. Looking at PC2 loadings, independence and anxiety had the heaviest weights. In the Cox Model, we saw that extraversion had the third largest effect on employee turnover. Since PC1 explained the most variance and extraversion had a higher weight in that principal component, we can say that extraversion plays a large role in employee turnover, thus following our Cox Proportional Hazards Model.
+
+#### Using a biplot with PC1 and PC2, we visualized how the samples relate to each other in our PCA, while revealing how each variable contributes to each principal component. 
+Specifically, we created ellipses based on the *event* of the dataset, allowing us to create two groups: people who quit and people who stayed at their job.
+```{r, echo = FALSE}
+ggbiplot(pr.out, ellipse=TRUE, groups=turnover$event)
+# # code for interactive plot found from datacamp
+```
+
+Looking at the legend, 1.00 (light blue) represents the value of "1" in the *event* column of the dataset, marking the event of quitting. 0.00 (dark blue) represents the value of "0" in the *event* column, marking the event of not quitting. The light blue dots represent the group of people who quit, and the dark blue dots represent the those who did not quit. 
+
+The two ellipses illustrate the overall trend the two groups have. The light blue circle, representing the people who quit, is slighter higher in placement compared to the dark blue circle, representing the people who did not quit. This illustrates that people who quit trend towards certain attributes and people who stayed lean towards other attributes.
+
+Independence is pointed upward and extraversion is pointing left and slightly upward. Since the light blue circle is higher than the dark blue circle, this means that people who quit tend to be more independent and slightly more extroverted. Following our previous assumptions, this makes sense since independent and extroverted people are more confident in their own abilities or brave enough to voice concerns and emotions. Since unemployment may cause someone to feel insecure or vulnerable, independence and extraversion may contribute to someone feeling more comfortable voicing their opinions and confident enough to quit. This coincided with our Cox Proportional Hazards model, seeing that people with high ratings in extraversion had higher hazard proportions.
+
+Anxiety is pointed downward, self control is pointing right and slightly downward, and novator is pointing left and slightly downward. Representing people who stayed at a job, the dark blue circle is lower in placement, going towards the anxiety, novator, and self control arrows. Unlike our previous assumption, someone with high ratings in novator was actually more likely to stay at a job. Coinciding with our other previous assumptions, people who stayed at a job tend to have higher ratings in anxiety and self control. Since people with high anxiety would be too nervous to quit, possibly worried about the repercussions of unemployment. Someone with more self control is able to regulate emotions, thoughts, or behavior, ultimately less likely to make a rash or impulsive decision like quitting. 
+
+From Principal Component Analysis, we saw that attributes like extraversion, novator, independence, self control, and anxiety impacted employee turnover. Ultimately, we are able to conclude that people's personalities have an affect on their decision of quitting a job.
+
+#### With our principal components, we included PC1, PC2, PC3, PC4, and PC5 in our Cox PH model. Since the principal components describe personality data, we replaced *extraversion* in our original model with the 5 PC's to see if adding them improved our model. 
+```{r}
+PC1 <- pr.out$x[,1]
+PC2 <- pr.out$x[,2]
+PC3 <- pr.out$x[,3]
+PC4 <- pr.out$x[,4]
+PC5 <- pr.out$x[,5]
+
+model_all_PC <- coxph(turn.surv~greywage + age + way + PC1 + PC2 + PC3 + PC4 + PC5, data = turnover)
+
+model_red <- coxph(turn.surv~1, data = turnover)
+
+n <- length(turn.surv)
+(AIC_model <- step(model_red, scope = list(lower = model_red, upper = model_all_PC), 
+                  direction = 'forward', trace = 0, k = 2))
+(BIC_model <- step(model_red, scope = list(lower = model_red, upper = model_all_PC), 
+                  direction = 'forward', trace = 0, k = log(n)))
+```
+
+Our best AIC model included *greywage*, *age*, *way*, *PC1*, *PC2*, and *PC3*.
+```{r}
+AIC(AIC_model)
+```
+Compared to our previous AIC value of 6900.297, we can see that this new model performed slightly better, with an AIC of 6899.725.
+
+Our best BIC model included *greywage* and *age*. Since the model did not include any principal components, all PC's proved insignificant. 
+```{r}
+BIC(BIC_model)
+```
+Compared to our previous BIC value of 6899.725, our BIC for this model was larger, so our previous model proved better.
+
+Ultimately, PCA did not improve our model significantly.
+
+## K-means clustering Analysis
+
+When deciding which method of clustering analysis to use, I considered using hierarchical clustering, but due to the sheer number of observations and not knowing what levels of each personality type were normal for the company, it made it difficult to prune the dendrograms to illicit comprehensible conclusions. Moreover, since the personality traits were all measured on a numeric scale form 0 to 10, it was easier to use k-means as a method of cluster analysis. 
+```{r cluster data, include = FALSE}
+turnover <- read_csv("~/Downloads/turnover.csv")
+```
+
+```{r}
+# Standardize the variables by subtracting mean and divided by standard deviation
+sturnover = scale(turnover[, -c(1,3:11)], center=TRUE, scale=TRUE)
+```
+
+Before running tests to determine the optimal k-value, I did a cursory analysis by creating clustering models using 2, 3, 4, and 5 different centroids to see what the clustering distribution looked like visually. 
+
+```{r}
+# Tried a few different types of k-values to see what looked 
+# correct visually and create comparison models
+set.seed(1)
+km2 = kmeans(sturnover, centers = 2, nstart = 25) 
+km3 = kmeans(sturnover, centers = 3, nstart = 25)
+km4 = kmeans(sturnover, centers = 4, nstart = 25)
+km5 = kmeans(sturnover, centers = 5, nstart = 25)
+# set nstart = 25 to have multiple initialization to 
+# ensure that the centroid value is accuarate
+```
+
+```{r, echo = FALSE}
+# Graphical comparison of the various clustering methods
+p1<-fviz_cluster(km2, data = sturnover)
+p2<-fviz_cluster(km3, data = sturnover)
+p3<-fviz_cluster(km4, data = sturnover)
+p4<-fviz_cluster(km5, data = sturnover)
+grid.arrange(p1,p2,p3,p4,nrow = 2)
+```
+
+#### Picking the Optimal Number of Clusters
+
+In order to pick the optimal number of centroids, or the optimal k-value, I used two verification methods, the elbow method and the silhouette method. The elbow method works by calculating the within sum of squares, or within cluster variation, which measures the compactness of data points within the cluster. As with normal variation, we want to minimize the within sum of squares value. The optimal k-value indicated graphically by the elbow method is visually apparent by seeing where there is a bend in the plot. This bend can also be observed by seeing at which point the change in the total within sum of squares value becomes less drastic and the graph tapers off.
+
+Using the elbow method, we produce the following graph:  
+
+```{r elbow graph, echo = FALSE}
+# Elbow Method Graph
+fviz_nbclust(sturnover, kmeans, method = "wss")
+```
+
+Looking at the graph, we see that there is little change going from 5 clusters to 6 clusters, suggesting that 5 clusters might be the optimum number of centroids. Given that there isn't a particularly well defined elbow in the graph, we opted to have 5 centers to match the 5 personality traits that we are comparing on.
+
+The second verification method used is the silhouette method. This method measures the quality of the cluster or how well each observation fits into the cluster. A high average silhouette width indicates good clustering, therefore it suggest an optimal number of clusters by selecting the one which produces the largest average silhouette width value indicated by a vertical dashed line.
+
+```{r silhouette graph, echo=FALSE}
+# Silhouette Graph
+fviz_nbclust(sturnover, kmeans, method = "silhouette")
+```
+
+Using the silhouette method observed in the above graph, we find that the optimal number of clusters is 2, with 8 clusters being the next optimal amount. 
+
+I tested doing clustering using 2 centroids, but due to the number of personality traits being 5, it made it difficult to understand which personality traits had the largest effect on an employee's decision to quit. Using 8 clusters seemed unnecessarily large since this surpasses our number of personality traits. Because of this, I chose to use 5 centroids, one for each personality trait, in the final model as it made the results more comprehensible to understand. 
+
+```{r final cluster model}
+# creating the final model using the found optimal k-value
+set.seed(1)
+final<- kmeans(sturnover, 5, nstart = 25)
+final 
+# prints out a summary of the clusters, the cluster means 
+# for each personality trait, and the within cluster sum of squares
+```
+
+Obtaining the summary of our final clustering model, we find that the sizes of all the clusters are relatively similar which indicates that the clusters aren't disproportionate.
+
+Since our event variable is binary with 0 being didn't quit and 1 being that the individual did quit, we are using how close the expected value of event is to determine which clusters contain individuals that are more likely to quit and those that are not. From our mean event values found in the model summary, we can see that clusters 1, 2, and 4 have average event values closer to 0 indicating that they are less likely to quit than those who are in clusters 3 and 5, which have average event values closer to 1. Using this observation, we can draw conclusions about the personality types of those who are more likely to stay with the company by observing the personality trait analysis associated with the observations in clusters 1, 2, and 4 and those who are more likely to quit as seen with the observations in clusters 3 and 5.
+
+##### Final Cluster Plot 
+```{r final cluster plot, echo = FALSE}
+fviz_cluster(final,data = sturnover)
+```
+
+##### Interactive Clustering Plot
+
+```{r interactive cluster plot, message=FALSE, warning=FALSE}
+turnover$cluster <- as.factor(final$cluster)
+p <- ggparcoord(data = turnover, columns = c(12:16), groupColumn = "cluster", 
+                scale = "std") + labs(x = "personality traits", 
+                                      y = "value (in standard-deviation units)", 
+                                      title = "Clustering")
+ggplotly(p)
+
+# code for interactive plot found from Towards Data Science
+```
+
+The graph above reports its results utilizing standard deviations from the mean. Keeping this in mind, we can make generalizations about the personality traits of 5 general types of individuals as denoted by the clusters by seeing how much they deviate from the average reported value associated with each trait. From the interactive graph above, we see that for the most part, employees who are less likely to quit which are those included in clusters 1, 2, and 4, tend to be introverted, independent, have slightly more self control than average, are more anxious, and slightly more innovative than those who are more likely to quit, as observed in clusters 3 and 5. 
+
+For the most part, these findings aligned with our original assumptions, with the exception of independence, self-control, and innovation (novator).
+
+```{r}
+# adding the cluster findings as a column to create a model using clusters as a covariate
+turnover$cluster <- as.factor(final$cluster)
+cluster.mod <- coxph(formula = turn.surv ~ greywage + age + extraversion + 
+                       way + cluster, data = turnover)
+summary(cluster.mod)
+```
+
+I converted the cluster findings into a column which I added to the original dataset. I added the column as a covariate to the previously found model. Looking at the p-value associated with the variable, which is very low, we can conclude that the cluster variable is significant. 
+
+```{r}
+BIC(cluster.mod, test_model)
+```
+
+I then calculated the BIC value of the new model to compare it to the BIC of the previous model found using the original dataset. When we calculated BIC for the original model, our original value was 6922.034. When calculating BIC on the new model which includes the cluster findings as a covariate, our new value is 6609.513. Since we want to minimize BIC and the BIC value of our modified model is significant lower, we can conclude that the optimal model includes clusters as a covariate as well as the previously found significant covariates of *greywage*, *age*, *extraversion*, and *way*.
+
+```{r}
+AIC(cluster.mod, test_model)
+```
+
+To confirm that the model which includes clusters is in fact the best, I used the AIC method and once again found that the model including clusters as a covariate minimizes the AIC value more than our previously found optimal model.
+
+# Prediction
+
+```{r}
+cluster.fit <- survfit(cluster.mod, newdata = turnover)
+turnover$Results <- summary(cluster.fit)$table[,"median"]
+unlist(quantile(turnover$Results, na.rm = TRUE))
+```
+
+Using our model which includes *greywage*, *age*, *extraversion*, *way*, and *cluster* as covariates, we predicted median survival rates for each of our observations which we compiled into a column in our dataset called Results. Using the quantile function we were able to ascertain a range for the median survival times and found that they ranged from 9.7906 to 166.2752 weeks before the employee quit. The median value was 70.9322 weeks until an employee quits.
+
+# Conclusion
+Using various analysis methods, we attempted to determine which attributes had an effect on employee turnover rate. In terms of all of our covariates, during our model section process, we discovered that the most important attributes overall were greywage, extraversion, age, and way, or the method of commuting used by the individual. When we focused our analysis on personality traits, using PCA we confirmed that extraversion has a large impact on employee turnover and also determined that novator, independence, self control, and anxiety also affected employee turnover. Finally, using k-means clustering analysis, we were able to generalize a set of personality traits that are more conducive to an individual quitting. Specifically, we found that individuals who are more extroverted, have lower than average self-control, and are not anxious are more likely to quit. This assertion is supported by the findings of both machine learning techniques used in the personality analysis. Adding the cluster allocations as a covariate to our model significantly improved it, suggesting that the various personality types do have a significant effect on turnover rate, allowing us to optimize our model.
+
+
+## References
+
+* Employee Turnover Dataset: https://www.kaggle.com/davinwijaya/employee-turnover
+* PCA biplot graph: https://www.datacamp.com/community/tutorials/pca-analysis-r?utm_source=adwords_ppc&utm_campaignid=1565261270&utm_adgroupid=67750485268&utm_device=c&utm_keyword=&utm_matchtype=b&utm_network=g&utm_adpostion=&utm_creative=332661264371&utm_targetid=aud-522010995285:dsa-429603003980&utm_loc_interest_ms=&utm_loc_physical_ms=9032048&gclid=CjwKCAiA8Jf-BRB-EiwAWDtEGqk_UZHaEqMCnyaI7D2zKAr6_wdpCoQjf6OZXeHbT3b8gnPLFeXjjxoCt5EQAvD_BwE
+* Github Repository for ggbiplot function: https://github.com/vqv/ggbiplot
+* Interactive clustering plot: https://towardsdatascience.com/clustering-analysis-in-r-using-k-means-73eca4fb7967
